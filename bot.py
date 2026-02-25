@@ -147,6 +147,11 @@ async def updater(bot: Bot, config: Config) -> None:
     prev_snapshot = _snapshot(config.interface)
     prev_time = time.monotonic()
     psutil.cpu_percent(interval=None)
+    sample_interval = min(1.0, config.update_interval)
+    next_update_at = prev_time + config.update_interval
+    accum_sent = 0.0
+    accum_recv = 0.0
+    accum_time = 0.0
 
     initial_text = _render(
         config.interface,
@@ -193,13 +198,23 @@ async def updater(bot: Bot, config: Config) -> None:
         logging.info("Создал сообщение %s в %s", message_id, config.channel_id)
 
     while True:
-        await asyncio.sleep(config.update_interval)
+        await asyncio.sleep(sample_interval)
         now_snapshot = _snapshot(config.interface)
         now_time = time.monotonic()
         interval = max(now_time - prev_time, 1e-3)
 
-        upload_bps = (now_snapshot.bytes_sent - prev_snapshot.bytes_sent) / interval
-        download_bps = (now_snapshot.bytes_recv - prev_snapshot.bytes_recv) / interval
+        accum_sent += now_snapshot.bytes_sent - prev_snapshot.bytes_sent
+        accum_recv += now_snapshot.bytes_recv - prev_snapshot.bytes_recv
+        accum_time += interval
+        prev_snapshot = now_snapshot
+        prev_time = now_time
+
+        if now_time < next_update_at:
+            continue
+
+        effective_interval = max(accum_time, 1e-3)
+        upload_bps = accum_sent / effective_interval
+        download_bps = accum_recv / effective_interval
 
         text = _render(
             config.interface,
@@ -212,6 +227,10 @@ async def updater(bot: Bot, config: Config) -> None:
         )
 
         if text == last_text:
+            accum_sent = 0.0
+            accum_recv = 0.0
+            accum_time = 0.0
+            next_update_at = now_time + config.update_interval
             continue
 
         try:
@@ -229,8 +248,10 @@ async def updater(bot: Bot, config: Config) -> None:
         else:
             last_text = text
 
-        prev_snapshot = now_snapshot
-        prev_time = now_time
+        accum_sent = 0.0
+        accum_recv = 0.0
+        accum_time = 0.0
+        next_update_at = now_time + config.update_interval
 
 
 async def main() -> None:
